@@ -1,6 +1,8 @@
 # ROS2 PTYHON SDK
 
-A Python SDK for the ROS2 API (link to github repo), providing methods for sending velocity, position, effort, and trajectory commands over TCP or UNIX domain sockets. The SDK uses MessagePack for serialization and RxPY for reactive feedback and state streams.
+A Python SDK for the [ROS2 API](https://github.com/Mesnero/ros2-api), providing methods for sending velocity, position, effort, and trajectory commands over TCP or UNIX domain sockets. The SDK uses MessagePack for serialization and RxPY for reactive feedback and state streams.
+
+Please refer to the [ROS2 API](https://github.com/Mesnero/ros2-api) for a more in depth explanation about message structures and the protocols.
 
 ## Features
 
@@ -46,5 +48,5 @@ sdk.disconnect()
 ```
 
 ## License
-This project is licensed under the MIT License - see the LICENSE (LINK TO LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Mesnero/ros2_sdk/blob/main/LICENSE) file for details.
 
