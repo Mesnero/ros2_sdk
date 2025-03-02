@@ -99,8 +99,8 @@ class ROS2SDK:
         if msg_type == 1:
             # Feedback message
             self._feedback_subject.on_next(msg)
-        elif msg_type in (2, 10):
-            # State messages (normal or calculated)
+        elif msg_type == 2:
+            # State messages
             self._state_subject.on_next(msg)
         else:
             # Unknown type; optionally log or ignore.
@@ -160,7 +160,7 @@ class ROS2SDK:
     def send_trajectory(self, trajPoints: List[TrajPoint], name: str):
         """
         Sends a trajectory command.
-        Each TrajPoint is converted into a dictionary with the required keys:
+        Each TrajPoint is converted into a dictionary with the keys:
             "positions", "velocities", "accelerations", "effort", "seconds", "nanoseconds"
         The payload structure is:
             { "joint_traj_points": [ { ... }, { ... }, ... ] }
@@ -169,11 +169,10 @@ class ROS2SDK:
         joint_traj_points = []
         for tp in trajPoints:
             traj_dict = {
-                "positions": tp.positions,
-                "velocities": tp.velocities,
-                # If accelerations is empty, you can decide whether to compute it or leave it empty.
+                "positions": tp.positions if tp.positions else [],
+                "velocities": tp.velocities if tp.velocities else [],
                 "accelerations": tp.accelerations if tp.accelerations else [],
-                "effort": tp.effort,
+                "effort": tp.effort if tp.effort else [],
                 "seconds": tp.seconds,
                 "nanoseconds": tp.nanoseconds
             }
@@ -185,6 +184,20 @@ class ROS2SDK:
             "payload": payload
         }
         self._send_message(message)
+        
+    def send_send_joypad(self, buttons: List[int], axes: List[float], name: str):
+        """
+        Sends a joypad input.
+            {"buttons": [...], "axes": [...]}
+        and the type is set to 50.
+        """
+        payload = {"buttons": buttons, "axes": axes}
+        message = {
+            "type": 50,
+            "name_publisher": name,
+            "payload": payload
+        }     
+        self._send_message(message) 
 
     def get_feedback_stream(self) -> Subject:
         """

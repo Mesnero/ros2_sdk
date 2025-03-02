@@ -14,6 +14,8 @@ Please refer to the [ROS2 API](https://github.com/Mesnero/ros2-api) for a more i
   - `send_position(pos: List[float], name: str)`
   - `send_effort(eff: List[float], name: str)`
   - `send_trajectory(trajPoints: List[TrajPoint], name: str)`
+  - `send_joypad(buttons: List[int], axes: List[float])`
+
   
 - **Reactive Streams:**  
   Subscribe to feedback and state streams using RxPY Subjects:
