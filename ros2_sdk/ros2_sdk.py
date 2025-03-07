@@ -67,7 +67,7 @@ class ROS2SDK:
             self._zmq_context = zmq.Context()
             self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
             # In this example, the SDK always binds if using ZMQ.
-            self._zmq_socket.bind(endpoint)
+            self._zmq_socket.connect(endpoint)
         else:
             raise ValueError("Unsupported protocol. Use 'TCP', 'UDS', or 'ZMQ'.")
 
