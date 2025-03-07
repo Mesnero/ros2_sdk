@@ -7,6 +7,7 @@ setup(
     install_requires=[
         'msgpack>=1.0.2',
         'rx>=3.2.0',
+        'zmq>=22.0.0',
     ],
     author='Johannes Mesner',
     author_email='johannes.mesner@tum.de',

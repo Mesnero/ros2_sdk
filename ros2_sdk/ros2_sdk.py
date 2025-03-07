@@ -4,6 +4,8 @@ import msgpack
 from typing import List, Dict, Any, Optional
 from rx.subject import Subject
 from dataclasses import dataclass, field
+import zmq
+import platform
 
 @dataclass
 class TrajPoint:
@@ -20,50 +22,79 @@ class TrajPoint:
 
 class ROS2SDK:
     def __init__(self):
+        # Normal socket attributes for TCP/UDS.
         self._socket: Optional[socket.socket] = None
+        # ZeroMQ specific attributes.
+        self._zmq_context: Optional[zmq.Context] = None
+        self._zmq_socket: Optional[zmq.Socket] = None
+        self._protocol: Optional[str] = None  # "TCP", "UDS", or "ZMQ"
+
         self._recv_thread: Optional[threading.Thread] = None
         self._running: bool = False
+
         # Subjects for reactive streams.
         self._feedback_subject: Subject = Subject()
         self._state_subject: Subject = Subject()
 
     def connect(self, protocol: str, params: Dict[str, Any]):
         """
-        Connects to the socket using TCP or UDS.
+        Connects to the communication channel.
         For TCP, params should include: 'ip' and 'port'
         For UDS, params should include: 'path'
+        For ZMQ, params should include: 'endpoint'
         """
-        protocol = protocol.upper()
-        if protocol == "TCP":
+        self._protocol = protocol.upper()
+        if self._protocol == "TCP":
             ip = params.get("ip")
             port = params.get("port")
             if ip is None or port is None:
                 raise ValueError("For TCP, 'ip' and 'port' must be provided in params.")
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._socket.connect((ip, port))
-        elif protocol == "UDS":
+        elif self._protocol == "UDS":
+            if platform.system() == "Windows":
+                raise ValueError("UDS is not supported on Windows.")
             path = params.get("path")
             if path is None:
                 raise ValueError("For UDS, 'path' must be provided in params.")
             self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._socket.connect(path)
+        elif self._protocol == "ZMQ":
+            endpoint = params.get("endpoint")
+            if endpoint is None:
+                raise ValueError("For ZMQ, 'endpoint' must be provided in params.")
+            self._zmq_context = zmq.Context()
+            self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
+            # In this example, the SDK always binds if using ZMQ.
+            self._zmq_socket.bind(endpoint)
         else:
-            raise ValueError("Unsupported protocol. Use 'TCP' or 'UDS'.")
+            raise ValueError("Unsupported protocol. Use 'TCP', 'UDS', or 'ZMQ'.")
 
         self._running = True
-        # Start a background thread that listens for incoming messages.
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()
 
     def disconnect(self):
-        """Closes the socket connection."""
+        """Closes the communication channel."""
         self._running = False
-        if self._socket:
+        if self._recv_thread:
+            self._recv_thread.join()
+        if self._protocol in ("TCP", "UDS") and self._socket:
             try:
                 self._socket.close()
             except Exception:
                 pass
             self._socket = None
+        elif self._protocol == "ZMQ" and self._zmq_socket:
+            try:
+                self._zmq_socket.close()
+            except Exception:
+                pass
+            self._zmq_socket = None
+            if self._zmq_context:
+                self._zmq_context.term()
+                self._zmq_context = None
 
     def _recv_loop(self):
         """
@@ -74,9 +105,16 @@ class ROS2SDK:
         unpacker = msgpack.Unpacker(raw=False)
         while self._running:
             try:
-                data = self._socket.recv(4096)
+                if self._protocol in ("TCP", "UDS"):
+                    data = self._socket.recv(4096)
+                elif self._protocol == "ZMQ":
+                    # For ZeroMQ, recv() returns bytes.
+                    data = self._zmq_socket.recv()
+                else:
+                    break
+
                 if not data:
-                    # Socket closed
+                    # Connection closed.
                     break
                 unpacker.feed(data)
                 for msg in unpacker:
@@ -108,19 +146,21 @@ class ROS2SDK:
 
     def _send_message(self, message: Dict[str, Any]):
         """
-        Serializes the given message with msgpack and sends it via the socket.
+        Serializes the given message with msgpack and sends it via the active channel.
         """
-        if not self._socket:
-            raise RuntimeError("Not connected. Please call connect() first.")
         data = msgpack.packb(message, use_bin_type=True)
-        self._socket.sendall(data)
+        if self._protocol in ("TCP", "UDS"):
+            if not self._socket:
+                raise RuntimeError("Not connected. Please call connect() first.")
+            self._socket.sendall(data)
+        elif self._protocol == "ZMQ":
+            if not self._zmq_socket:
+                raise RuntimeError("Not connected. Please call connect() first.")
+            self._zmq_socket.send(data)
+        else:
+            raise RuntimeError("Unsupported protocol.")
 
     def send_velocity(self, vel: List[float], name: str):
-        """
-        Sends a velocity command. The payload is:
-            { "joint_values": [ ... ] }
-        and the type is set to 31.
-        """
         payload = {"joint_values": vel}
         message = {
             "type": 31,
@@ -130,11 +170,6 @@ class ROS2SDK:
         self._send_message(message)
 
     def send_position(self, pos: List[float], name: str):
-        """
-        Sends a position command. The payload is:
-            { "joint_values": [ ... ] }
-        and the type is set to 30.
-        """
         payload = {"joint_values": pos}
         message = {
             "type": 30,
@@ -144,11 +179,6 @@ class ROS2SDK:
         self._send_message(message)
 
     def send_effort(self, eff: List[float], name: str):
-        """
-        Sends an effort command. The payload is:
-            { "joint_values": [ ... ] }
-        and the type is set to 32.
-        """
         payload = {"joint_values": eff}
         message = {
             "type": 32,
@@ -158,14 +188,6 @@ class ROS2SDK:
         self._send_message(message)
 
     def send_trajectory(self, trajPoints: List[TrajPoint], name: str):
-        """
-        Sends a trajectory command.
-        Each TrajPoint is converted into a dictionary with the keys:
-            "positions", "velocities", "accelerations", "effort", "seconds", "nanoseconds"
-        The payload structure is:
-            { "joint_traj_points": [ { ... }, { ... }, ... ] }
-        and the type is set to 20.
-        """
         joint_traj_points = []
         for tp in trajPoints:
             traj_dict = {
@@ -185,30 +207,17 @@ class ROS2SDK:
         }
         self._send_message(message)
         
-    def send_send_joypad(self, buttons: List[int], axes: List[float], name: str):
-        """
-        Sends a joypad input.
-            {"buttons": [...], "axes": [...]}
-        and the type is set to 50.
-        """
+    def send_joypad(self, buttons: List[int], axes: List[float], name: str):
         payload = {"buttons": buttons, "axes": axes}
         message = {
             "type": 50,
             "name_publisher": name,
             "payload": payload
-        }     
-        self._send_message(message) 
+        }
+        self._send_message(message)
 
     def get_feedback_stream(self) -> Subject:
-        """
-        Returns a reactive stream (Subject) where feedback messages (type 1) are pushed.
-        The user can subscribe to this Subject to receive messages immediately.
-        """
         return self._feedback_subject
 
     def get_state_stream(self) -> Subject:
-        """
-        Returns a reactive stream (Subject) where state messages are pushed.
-        Both normal (type 2) and calculated states (type 10) are sent here.
-        """
         return self._state_subject
