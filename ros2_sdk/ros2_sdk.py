@@ -22,12 +22,14 @@ class TrajPoint:
 
 class ROS2SDK:
     def __init__(self):
-        # Normal socket attributes for TCP/UDS.
-        self._socket: Optional[socket.socket] = None
         # ZeroMQ specific attributes.
         self._zmq_context: Optional[zmq.Context] = None
-        self._zmq_socket: Optional[zmq.Socket] = None
-        self._protocol: Optional[str] = None  # "TCP", "UDS", or "ZMQ"
+        self._zmq_socket_recv: Optional[zmq.Socket] = None
+        self._zmq_socket_send: Optional[zmq.Socket] = None        
+        self._protocol: Optional[str] = None  # "TCP", "UDS"
+        
+        self._endpoint_recv: Optional[str] = None
+        self._endpoint_send: Optional[str] = None
 
         self._recv_thread: Optional[threading.Thread] = None
         self._running: bool = False
@@ -41,35 +43,39 @@ class ROS2SDK:
         Connects to the communication channel.
         For TCP, params should include: 'ip' and 'port'
         For UDS, params should include: 'path'
-        For ZMQ, params should include: 'endpoint'
         """
         self._protocol = protocol.upper()
+        self._zmq_context = zmq.Context()
+
         if self._protocol == "TCP":
             ip = params.get("ip")
-            port = params.get("port")
-            if ip is None or port is None:
-                raise ValueError("For TCP, 'ip' and 'port' must be provided in params.")
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self._socket.connect((ip, port))
+            port_recv = params.get("port_recv", "5556")
+            port_send = params.get("port_send", "5555")
+            self._endpoint_recv = f"tcp://{ip}:{port_recv}"
+            self._endpoint_send = f"tcp://{ip}:{port_send}"
+            
+            self._zmq_socket_recv = self._zmq_context.socket(zmq.PULL)
+            self._zmq_socket_recv.connect(self._endpoint_recv)
+            
+            self._zmq_socket_send = self._zmq_context.socket(zmq.PUSH)
+            self._zmq_socket_send.connect(self._endpoint_send)            
         elif self._protocol == "UDS":
             if platform.system() == "Windows":
                 raise ValueError("UDS is not supported on Windows.")
-            path = params.get("path")
-            if path is None:
+            path_recv = params.get("path_recv")
+            path_send = params.get("path_send")
+            if path_recv is None or path_send is None:
                 raise ValueError("For UDS, 'path' must be provided in params.")
-            self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._socket.connect(path)
-        elif self._protocol == "ZMQ":
-            endpoint = params.get("endpoint")
-            if endpoint is None:
-                raise ValueError("For ZMQ, 'endpoint' must be provided in params.")
-            self._zmq_context = zmq.Context()
-            self._zmq_socket = self._zmq_context.socket(zmq.PAIR)
-            # In this example, the SDK always binds if using ZMQ.
-            self._zmq_socket.connect(endpoint)
+            self._endpoint_recv = "ipc://" + path_recv
+            self._endpoint_send = "ipc://" + path_send
+            
+            self._zmq_socket_recv = self._zmq_context.socket(zmq.PULL)
+            self._zmq_socket_recv.connect(self._endpoint_recv)
+
+            self._zmq_socket_send = self._zmq_context.socket(zmq.PUSH)
+            self._zmq_socket_send.connect(self._endpoint_send)
         else:
-            raise ValueError("Unsupported protocol. Use 'TCP', 'UDS', or 'ZMQ'.")
+            raise ValueError("Unsupported protocol. Use 'TCP', 'UDS'.")
 
         self._running = True
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -80,21 +86,21 @@ class ROS2SDK:
         self._running = False
         if self._recv_thread:
             self._recv_thread.join()
-        if self._protocol in ("TCP", "UDS") and self._socket:
+        if self._zmq_socket_recv:
             try:
-                self._socket.close()
+                self._zmq_socket_recv.close()
             except Exception:
                 pass
-            self._socket = None
-        elif self._protocol == "ZMQ" and self._zmq_socket:
+            self._zmq_socket_recv = None
+        if self._zmq_socket_send:
             try:
-                self._zmq_socket.close()
+                self._zmq_socket_send.close()
             except Exception:
                 pass
-            self._zmq_socket = None
-            if self._zmq_context:
-                self._zmq_context.term()
-                self._zmq_context = None
+            self._zmq_socket_send = None
+        if self._zmq_context:
+            self._zmq_context.term()
+            self._zmq_context = None
 
     def _recv_loop(self):
         """
@@ -104,23 +110,18 @@ class ROS2SDK:
         """
         unpacker = msgpack.Unpacker(raw=False)
         while self._running:
+            print("G")
             try:
-                if self._protocol in ("TCP", "UDS"):
-                    data = self._socket.recv(4096)
-                elif self._protocol == "ZMQ":
-                    # For ZeroMQ, recv() returns bytes.
-                    data = self._zmq_socket.recv()
-                else:
-                    break
-
+                data = self._zmq_socket_recv.recv()
                 if not data:
-                    # Connection closed.
+                    print("NO DATA")
                     break
+                print("DATA")
                 unpacker.feed(data)
                 for msg in unpacker:
                     self._handle_incoming_message(msg)
             except Exception as e:
-                # Optionally log the error; for now, we simply break the loop.
+                print("EXCEPTION")
                 break
 
     def _handle_incoming_message(self, msg: Dict[str, Any]):
@@ -136,10 +137,10 @@ class ROS2SDK:
         msg_type = msg.get("type")
         if msg_type == 1:
             # Feedback message
-            self._feedback_subject.on_next(msg)
+            self._feedback_subject.on_next(msg["payload"])
         elif msg_type == 2:
             # State messages
-            self._state_subject.on_next(msg)
+            self._state_subject.on_next(msg["payload"])
         else:
             # Unknown type; optionally log or ignore.
             pass
@@ -149,16 +150,10 @@ class ROS2SDK:
         Serializes the given message with msgpack and sends it via the active channel.
         """
         data = msgpack.packb(message, use_bin_type=True)
-        if self._protocol in ("TCP", "UDS"):
-            if not self._socket:
-                raise RuntimeError("Not connected. Please call connect() first.")
-            self._socket.sendall(data)
-        elif self._protocol == "ZMQ":
-            if not self._zmq_socket:
-                raise RuntimeError("Not connected. Please call connect() first.")
-            self._zmq_socket.send(data)
-        else:
-            raise RuntimeError("Unsupported protocol.")
+        if not self._zmq_socket_send:
+            raise RuntimeError("Not connected. Please call connect() first.")
+        self._zmq_socket_send.send(data)
+        
 
     def send_velocity(self, vel: List[float], name: str):
         payload = {"joint_values": vel}
@@ -187,7 +182,7 @@ class ROS2SDK:
         }
         self._send_message(message)
 
-    def send_trajectory(self, trajPoints: List[TrajPoint], name: str):
+    def send_trajectory(self, trajPoints: List[TrajPoint], name: str, joint_names: List[str]):
         joint_traj_points = []
         for tp in trajPoints:
             traj_dict = {
@@ -199,7 +194,7 @@ class ROS2SDK:
                 "nanoseconds": tp.nanoseconds
             }
             joint_traj_points.append(traj_dict)
-        payload = {"joint_traj_points": joint_traj_points}
+        payload = {"joint_traj_points": joint_traj_points, "joint_names": joint_names}
         message = {
             "type": 20,
             "name_publisher": name,
