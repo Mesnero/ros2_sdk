@@ -1,13 +1,14 @@
 # ROS2 PTYHON SDK
 
-A Python SDK for the [ROS2 API](https://github.com/Mesnero/ros2-api), providing methods for sending velocity, position, effort, and trajectory commands over TCP or UNIX domain sockets. The SDK uses MessagePack for serialization and RxPY for reactive feedback and state streams.
+A Python SDK for the [ROS2 API](https://github.com/Mesnero/ros2-api), providing methods for sending velocity, position, effort, and trajectory commands over TCP or UNIX domain sockets or ZeroMQ. The SDK uses MessagePack for serialization and RxPY for reactive feedback and state streams.
 
 Please refer to the [ROS2 API](https://github.com/Mesnero/ros2-api) for a more in depth explanation about message structures and the protocols.
 
 ## Features
 
 - **Connection Methods:**  
-  Connect using TCP or UNIX domain sockets.
+  Connect using TCP, UNIX domain sockets or ZeroMQ.
+  Important: To have a connection to the ros2-api, the receiving endpoint in the SDK must match the sending endpoint in ROS2. (Same for receiving)
   
 - **Command Methods:**  
   - `send_velocity(vel: List[float], name: str)`
@@ -36,7 +37,9 @@ from ros2_sdk import ROS2SDK, TrajPoint
 
 # Initialize and connect
 sdk = ROS2SDK()
-sdk.connect("TCP", {"ip": "127.0.0.1", "port": 12345})
+sdk.connect("TCP", {"ip": "127.0.0.1", "port_send": 5555, "port_recv": 5556})
+sdk.connect("UDS", {"path_recv": "/your_path1.socket", "path_send": "/your_path2.socket"})
+sdk.connect("0MQ, {"endpoint_send": "tcp://127.0.0.1:5555", "endpoint_recv": "tcp://127.0.0.1:5556"})
 
 # Send a command
 sdk.send_velocity([1.0, 2.0, 3.0], "velocity_publisher")
@@ -45,8 +48,6 @@ sdk.send_velocity([1.0, 2.0, 3.0], "velocity_publisher")
 sdk.get_feedback_stream().subscribe(lambda msg: print("Feedback:", msg))
 sdk.get_state_stream().subscribe(lambda msg: print("State:", msg))
 
-# Disconnect when done
-sdk.disconnect()
 ```
 
 ## License
