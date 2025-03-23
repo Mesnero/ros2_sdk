@@ -26,7 +26,7 @@ class ROS2SDK:
         self._zmq_context: Optional[zmq.Context] = None
         self._zmq_socket_recv: Optional[zmq.Socket] = None
         self._zmq_socket_send: Optional[zmq.Socket] = None        
-        self._protocol: Optional[str] = None  # "TCP", "UDS"
+        self._protocol: Optional[str] = None  # "TCP", "UDS", 0MQ
         
         self._endpoint_recv: Optional[str] = None
         self._endpoint_send: Optional[str] = None
@@ -41,24 +41,24 @@ class ROS2SDK:
     def connect(self, protocol: str, params: Dict[str, Any]):
         """
         Connects to the communication channel.
-        For TCP, params should include: 'ip' and 'port'
-        For UDS, params should include: 'path'
+        For TCP, params should include: 'ip', 'port_recv', 'port_send'
+        For UDS, params should include: 'path_recv', 'path_send'
+        For 0MQ, params should include: 'endpoint_recv', 'endpoint_send'
         """
         self._protocol = protocol.upper()
         self._zmq_context = zmq.Context()
 
         if self._protocol == "TCP":
             ip = params.get("ip")
-            port_recv = params.get("port_recv", "5556")
-            port_send = params.get("port_send", "5555")
+            port_recv = params.get("port_recv")
+            port_send = params.get("port_send")
+            if ip is None:
+                raise ValueError("For TCP, 'ip' must be provided in params.")
+            if port_recv is None or port_send is None:
+                raise ValueError("For TCP, 'port_recv' and 'port_send' must be provided in params.")
             self._endpoint_recv = f"tcp://{ip}:{port_recv}"
             self._endpoint_send = f"tcp://{ip}:{port_send}"
-            
-            self._zmq_socket_recv = self._zmq_context.socket(zmq.PULL)
-            self._zmq_socket_recv.connect(self._endpoint_recv)
-            
-            self._zmq_socket_send = self._zmq_context.socket(zmq.PUSH)
-            self._zmq_socket_send.connect(self._endpoint_send)            
+                        
         elif self._protocol == "UDS":
             if platform.system() == "Windows":
                 raise ValueError("UDS is not supported on Windows.")
@@ -69,14 +69,22 @@ class ROS2SDK:
             self._endpoint_recv = "ipc://" + path_recv
             self._endpoint_send = "ipc://" + path_send
             
-            self._zmq_socket_recv = self._zmq_context.socket(zmq.PULL)
-            self._zmq_socket_recv.connect(self._endpoint_recv)
+        elif self._protocol == "0MQ":
+            endpoint_recv = params.get("endpoint_recv")
+            endpoint_send = params.get("endpoint_send")
+            if endpoint_recv is None or endpoint_send is None:
+                raise ValueError("For 0MQ, 'endpoint_recv' and 'endpoint_send' must be provided in params.")
+            
+            self._endpoint_recv = endpoint_recv
+            self._endpoint_send = endpoint_send
 
-            self._zmq_socket_send = self._zmq_context.socket(zmq.PUSH)
-            self._zmq_socket_send.connect(self._endpoint_send)
         else:
-            raise ValueError("Unsupported protocol. Use 'TCP', 'UDS'.")
+            raise ValueError("Unsupported protocol. Use 'TCP', 'UDS' or 0MQ.")
 
+        self._zmq_socket_recv = self._zmq_context.socket(zmq.PULL)
+        self._zmq_socket_recv.connect(self._endpoint_recv)
+        self._zmq_socket_send = self._zmq_context.socket(zmq.PUSH)
+        self._zmq_socket_send.connect(self._endpoint_send)
         self._running = True
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()
@@ -110,18 +118,15 @@ class ROS2SDK:
         """
         unpacker = msgpack.Unpacker(raw=False)
         while self._running:
-            print("G")
             try:
                 data = self._zmq_socket_recv.recv()
                 if not data:
-                    print("NO DATA")
                     break
-                print("DATA")
                 unpacker.feed(data)
                 for msg in unpacker:
                     self._handle_incoming_message(msg)
             except Exception as e:
-                print("EXCEPTION")
+                print(e)
                 break
 
     def _handle_incoming_message(self, msg: Dict[str, Any]):
