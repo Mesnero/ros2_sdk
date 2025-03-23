@@ -39,7 +39,7 @@ from ros2_sdk import ROS2SDK, TrajPoint
 sdk = ROS2SDK()
 sdk.connect("TCP", {"ip": "127.0.0.1", "port_send": 5555, "port_recv": 5556})
 sdk.connect("UDS", {"path_recv": "/your_path1.socket", "path_send": "/your_path2.socket"})
-sdk.connect("0MQ, {"endpoint_send": "tcp://127.0.0.1:5555", "endpoint_recv": "tcp://127.0.0.1:5556"})
+sdk.connect("0MQ", {"endpoint_send": "tcp://127.0.0.1:5555", "endpoint_recv": "tcp://127.0.0.1:5556"})
 
 # Send a command
 sdk.send_velocity([1.0, 2.0, 3.0], "velocity_publisher")
